@@ -1,0 +1,314 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Template para criar infraestrutura web basica - Primeira Stack CloudFormation'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: 'primeira-stack'
+    Description: 'Nome do projeto para tags e nomenclatura de recursos'
+    
+  KeyPairName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: 'Nome da Key Pair EC2 existente para acesso SSH'
+    
+  InstanceType:
+    Type: String
+    Default: 't2.micro'
+    AllowedValues:
+      - t2.micro
+      - t2.small
+      - t2.medium
+    Description: 'Tipo da instancia EC2'
+    
+  VpcCidr:
+    Type: String
+    Default: '10.0.0.0/16'
+    Description: 'CIDR block para a VPC'
+    
+  SubnetCidr:
+    Type: String
+    Default: '10.0.1.0/24'
+    Description: 'CIDR block para a subnet publica'
+
+  MyIP:
+    Type: String
+    Default: '0.0.0.0/0'
+    Description: 'Seu IP para acesso SSH (use 0.0.0.0/0 para qualquer IP - nao recomendado para producao)'
+
+Mappings:
+  AWSRegionToAMI:
+    us-east-1:
+      AMI: ami-0c02fb55956c7d316
+    us-west-2:
+      AMI: ami-0c55b159cbfafe1d0
+    eu-west-1:
+      AMI: ami-0c02fb55956c7d316
+
+Resources:
+  # VPC - Virtual Private Cloud
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-vpc'
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # Internet Gateway
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-igw'
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # Attach Internet Gateway à VPC
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+
+  # Subnet Pública
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      CidrBlock: !Ref SubnetCidr
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-public-subnet'
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # Route Table para Subnet Pública
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-public-routes'
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # Rota padrão para Internet Gateway
+  DefaultPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  # Associação da Subnet com Route Table
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet
+
+  # Security Group para o Servidor Web
+  WebServerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${ProjectName}-web-sg'
+      GroupDescription: 'Security group para servidor web com HTTP e SSH'
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: 'HTTP access from anywhere'
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: 'HTTPS access from anywhere'
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref MyIP
+          Description: 'SSH access from specified IP'
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: 'All outbound traffic'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-web-sg'
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # Instância EC2 para Servidor Web
+  WebServerInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !FindInMap [AWSRegionToAMI, !Ref 'AWS::Region', AMI]
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyPairName
+      SubnetId: !Ref PublicSubnet
+      SecurityGroupIds:
+        - !Ref WebServerSecurityGroup
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          yum update -y
+          yum install -y httpd
+          systemctl start httpd
+          systemctl enable httpd
+          
+          # Criar página HTML personalizada
+          cat > /var/www/html/index.html << 'EOF'
+          <!DOCTYPE html>
+          <html lang="pt-br">
+          <head>
+              <meta charset="UTF-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+              <title>Minha Primeira Stack CloudFormation</title>
+              <style>
+                  body {
+                      font-family: Arial, sans-serif;
+                      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                      margin: 0;
+                      padding: 0;
+                      min-height: 100vh;
+                      display: flex;
+                      justify-content: center;
+                      align-items: center;
+                      color: white;
+                  }
+                  .container {
+                      text-align: center;
+                      background: rgba(255, 255, 255, 0.1);
+                      padding: 3rem 2rem;
+                      border-radius: 15px;
+                      backdrop-filter: blur(10px);
+                      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+                      max-width: 600px;
+                  }
+                  h1 {
+                      font-size: 2.5rem;
+                      margin-bottom: 1rem;
+                      text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
+                  }
+                  .info {
+                      background: rgba(255, 255, 255, 0.2);
+                      padding: 1.5rem;
+                      border-radius: 10px;
+                      margin: 2rem 0;
+                  }
+                  .success {
+                      color: #4ade80;
+                      font-size: 1.2rem;
+                      font-weight: bold;
+                      margin-bottom: 1rem;
+                  }
+                  .detail {
+                      margin: 0.5rem 0;
+                      font-size: 0.9rem;
+                  }
+                  .footer {
+                      margin-top: 2rem;
+                      font-size: 0.8rem;
+                      opacity: 0.8;
+                  }
+              </style>
+          </head>
+          <body>
+              <div class="container">
+                  <h1>🚀 CloudFormation Stack Implantada!</h1>
+                  
+                  <div class="success">✅ Infraestrutura criada com sucesso!</div>
+                  
+                  <div class="info">
+                      <h3>Detalhes da Implantação</h3>
+                      <div class="detail"><strong>Projeto:</strong> ${ProjectName}</div>
+                      <div class="detail"><strong>Instância:</strong> ${InstanceType}</div>
+                      <div class="detail"><strong>Região:</strong> ${AWS::Region}</div>
+                      <div class="detail"><strong>AZ:</strong> ${AWS::AvailabilityZone}</div>
+                      <div class="detail"><strong>Data/Hora:</strong> <span id="datetime"></span></div>
+                  </div>
+                  
+                  <p>Esta página foi gerada automaticamente pelo script User Data da instância EC2, demonstrando a automação completa da infraestrutura usando AWS CloudFormation.</p>
+                  
+                  <div class="footer">
+                      <p>Desafio DIO - Implementando sua Primeira Stack com AWS CloudFormation</p>
+                  </div>
+              </div>
+              
+              <script>
+                  document.getElementById('datetime').textContent = new Date().toLocaleString('pt-BR');
+              </script>
+          </body>
+          </html>
+          EOF
+          
+          # Reiniciar Apache
+          systemctl restart httpd
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-web-server'
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # Elastic IP para a instância (opcional)
+  WebServerEIP:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref WebServerInstance
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-web-eip'
+        - Key: Project
+          Value: !Ref ProjectName
+
+Outputs:
+  VPCId:
+    Description: 'ID da VPC criada'
+    Value: !Ref VPC
+    Export:
+      Name: !Sub '${ProjectName}-VPC-ID'
+
+  PublicSubnetId:
+    Description: 'ID da Subnet Publica'
+    Value: !Ref PublicSubnet
+    Export:
+      Name: !Sub '${ProjectName}-PublicSubnet-ID'
+
+  WebServerInstanceId:
+    Description: 'ID da instancia EC2'
+    Value: !Ref WebServerInstance
+
+  WebServerPublicIP:
+    Description: 'IP Publico da instancia'
+    Value: !Ref WebServerEIP
+
+  WebServerPublicDNS:
+    Description: 'DNS Publico da instancia'
+    Value: !GetAtt WebServerInstance.PublicDnsName
+
+  WebsiteURL:
+    Description: 'URL da aplicacao web'
+    Value: !Sub 'http://${WebServerEIP}'
+
+  SecurityGroupId:
+    Description: 'ID do Security Group'
+    Value: !Ref WebServerSecurityGroup
+    Export:
+      Name: !Sub '${ProjectName}-WebSG-ID'
+
+  SSHCommand:
+    Description: 'Comando SSH para conectar na instancia'
+    Value: !Sub 'ssh -i ${KeyPairName}.pem ec2-user@${WebServerEIP}'
